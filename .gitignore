@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large binaries
+*.npz
+
+# Data (competition data — download from Kaggle/GitHub)
+data/raw/
+data/processed/
+
+# Archive (exploration history, not part of the final solution)
+archive/
