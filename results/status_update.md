@@ -202,11 +202,11 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
   - Active-site accessibility: `yxdd_surface_proxy`, `yxdd_local_compactness`, `yxdd_confidence_mean`
   - Template-aligned: `global_vs_local_mmlv_gap`, `global_vs_local_best_gap`
   - Burden: `rnaseh_present_proxy`, `fusion_burden_proxy`
-- **Audit**: `global_vs_local_best_gap` has AUROC 0.779 (best univariate classifier) and is genuinely novel (max|r|=0.27 with existing features)
-- **But**: every feature degrades CLS when added to v6. Best individual: `yxdd_local_compactness` (CLS -0.001). Worst: `global_vs_local_best_gap` (CLS -0.231 — collapses W-Spearman)
+- **Audit**: `global_vs_local_best_gap` has AUROC 0.779 (best univariate classifier) and is genuinely novel (max|r|=0.27 with existing features). **Caveat**: despite its name, the "local best" component is computed against a fixed MMLV/MMLVPE reference using unaligned RMSD, not against each RT's own best structural match. The feature is therefore a "global best TM minus local MMLV similarity" proxy, not a true per-RT local/global mismatch.
+- **But**: every feature degrades CLS when added to v6's ElasticNet (same α=1.0, l1=0.3, no retuning). Best individual: `yxdd_local_compactness` (CLS -0.001). Worst: `global_vs_local_best_gap` (CLS -0.231 — collapses W-Spearman)
 - Adding all features: CLS 0.318 (catastrophe). Top 2-3: CLS 0.300.
-- **Diagnosis**: features with high classification power (AUROC 0.78) destroy ranking because they capture phylogenetic proximity to MMLV, not genuine fusion compatibility
-- **NO-GO**: compatibility hypothesis falsified at the cheap-proxy level
+- **Diagnosis**: features with high classification power (AUROC 0.78) destroy ranking when added to the current pipeline
+- **NO-GO for this integration**: cheap compatibility proxies do not improve v6 in the tested add-on configuration. This does not fully falsify the RT-Cas9 compatibility hypothesis — it shows these particular proxies (coarse, unaligned, fixed reference) are not additive to the current backbone with the current integration method.
 
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
@@ -237,4 +237,4 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - **SRA PRJNA916060 reprocessing** (feasible but addresses only ranking of 21 active RTs, not classification)
 - **Protein structure GNN** (message passing on contact graph — fundamentally different representation)
 - **External RT data with PE labels** (would require new wet-lab experiments)
-- **RT-Cas9 docking / interaction modeling** (cheap proxies falsified in Phase 17; full docking might still capture genuine interaction signal, but cheap version suggests the "compatibility" signal is mostly phylogeny in disguise)
+- **RT-Cas9 docking / interaction modeling** (cheap proxies failed in Phase 17 add-on test, but the implementation had limitations: fixed reference, unaligned RMSD, no model retuning. Full docking or properly aligned local TM-scores might still capture genuine interaction signal.)
