@@ -195,6 +195,19 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 **Key finding from V16**: Oracle analysis proves +0.12 CLS headroom exists in classification alone, but this headroom requires information not present in any available representation (ESM2-650M, ESM2-3B, tabular features, PDB structures). The missing signal likely encodes fine-grained biochemical properties of the RT-Cas9 interaction that are not captured by sequence-level or structure-level representations.
 
+### Phase 17 — RT-Cas9 Compatibility Signal (cheap version)
+- Hypothesis: missing PE signal comes from RT-Cas9 fusion compatibility, not RT quality in isolation
+- 10 cheap compatibility features extracted from sequences + AlphaFold structures:
+  - Fusion geometry: `nterm_to_yxdd_frac`, `cterm_to_yxdd_frac`, `termini_asymmetry_to_core`
+  - Active-site accessibility: `yxdd_surface_proxy`, `yxdd_local_compactness`, `yxdd_confidence_mean`
+  - Template-aligned: `global_vs_local_mmlv_gap`, `global_vs_local_best_gap`
+  - Burden: `rnaseh_present_proxy`, `fusion_burden_proxy`
+- **Audit**: `global_vs_local_best_gap` has AUROC 0.779 (best univariate classifier) and is genuinely novel (max|r|=0.27 with existing features)
+- **But**: every feature degrades CLS when added to v6. Best individual: `yxdd_local_compactness` (CLS -0.001). Worst: `global_vs_local_best_gap` (CLS -0.231 — collapses W-Spearman)
+- Adding all features: CLS 0.318 (catastrophe). Top 2-3: CLS 0.300.
+- **Diagnosis**: features with high classification power (AUROC 0.78) destroy ranking because they capture phylogenetic proximity to MMLV, not genuine fusion compatibility
+- **NO-GO**: compatibility hypothesis falsified at the cheap-proxy level
+
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
 - Only 21 active RTs in SRA (inactive ones not sequenced)
@@ -204,7 +217,7 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 ## Final Diagnosis
 
-The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~100+ experiments over 16 phases).
+The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~110+ experiments over 17 phases).
 
 - Global features (FoldSeek, thermostability, ESM2) **are** the signal
 - Local signal (active site alone) is insufficient (CLS 0.46 vs 0.59 global)
@@ -224,4 +237,4 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - **SRA PRJNA916060 reprocessing** (feasible but addresses only ranking of 21 active RTs, not classification)
 - **Protein structure GNN** (message passing on contact graph — fundamentally different representation)
 - **External RT data with PE labels** (would require new wet-lab experiments)
-- **RT-Cas9 docking / interaction modeling** (could encode the missing classification signal identified by oracle analysis)
+- **RT-Cas9 docking / interaction modeling** (cheap proxies falsified in Phase 17; full docking might still capture genuine interaction signal, but cheap version suggests the "compatibility" signal is mostly phylogeny in disguise)
