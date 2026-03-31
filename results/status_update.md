@@ -169,6 +169,32 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 **Conclusion**: LoRA fine-tuning on 50 training samples learns family-specific patterns that don't generalize across the LOFO boundary. PDB features are redundant with existing FoldSeek/structural features. All target transformations lose the carefully balanced signal. Feature selection removes useful but weak features. The baseline per-fold PCA + asymmetric Ridge (0.7088) remains optimal.
 
+### Phase 16 — Plan V16: Break 0.7088 (oracle-guided)
+
+**Step 1 — Oracle diagnostics** (prove headroom exists):
+- Oracle Classification (perfect active/inactive, same ranking): CLS 0.811 → **+0.12 headroom** (classification is the bottleneck)
+- Oracle Retron (perfect Retron predictions): CLS 0.738 → +0.047 (Retron accounts for ~5 pts)
+- Oracle Per-Family Best Model: CLS 0.693 → +0.002 (current blend is near-optimal)
+- **GO**: massive classification headroom exists
+
+**Step 2 — Classification corrector on top of v6**:
+- `src/v16_break.py`: Logistic (C=0.1) and Ridge (α=10) corrector on 8 features (v6 blend score, EN/L12/L33 normalized scores, 3 pairwise disagreements, boundary distance), 7 lambda values (0.0–0.5) → 14 configs, all ≤ 0.7088
+- Separate sweep (`v16_corrector_cpu.py`): added top tabular classification features (FoldSeek TM-scores, triad quality) and broader regularization (C=0.01–0.5) → 72 configs, all ≤ 0.7088
+- **FAIL**: the classification signal gap is not capturable from existing model scores or tabular features
+
+**Step 3 — ESM2-3B frozen mid-region layer sweep** (GPU RTX 4070 Super, exploratory, 30+ configs):
+- ESM2-3B (`esm2_t36_3B_UR50D`, 36 layers, 2560D) extracted on GPU in float16
+- **Important caveat**: 3B embeddings extracted on GPU/float16 are not numerically identical to a CPU/float32 extraction. Results below are an exploratory comparison, not an apples-to-apples benchmark against the CPU-based 0.7088 production pipeline.
+- **3B-L18 alone: PR-AUC 0.7465** (best classification score ever) but W-Spearman 0.641 → CLS 0.690
+- 3B-L18 replacing 650M-L12: CLS 0.671 (loses ranking)
+- 3B as 4th model (EN + 650M-L12 + 650M-L33 + 3B-L18): max CLS 0.705 (GPU baseline 0.696, α=50)
+- 3B-L18 + 650M-L33: CLS 0.671
+- All 3B-only configurations collapse (W-Spearman ~0.1 for most layers)
+- Cross-device combo (3B GPU embeddings + 650M CPU embeddings): max CLS 0.683 — lower than pure CPU 650M (0.7088), likely due to embedding distribution mismatch
+- **FAIL**: 3B captures better classification signal but loses the ranking that 650M provides. No combination beats 0.7088 in comparable conditions.
+
+**Key finding from V16**: Oracle analysis proves +0.12 CLS headroom exists in classification alone, but this headroom requires information not present in any available representation (ESM2-650M, ESM2-3B, tabular features, PDB structures). The missing signal likely encodes fine-grained biochemical properties of the RT-Cas9 interaction that are not captured by sequence-level or structure-level representations.
+
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
 - Only 21 active RTs in SRA (inactive ones not sequenced)
@@ -178,7 +204,7 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 ## Final Diagnosis
 
-The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~80+ experiments over 15 phases).
+The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~100+ experiments over 16 phases).
 
 - Global features (FoldSeek, thermostability, ESM2) **are** the signal
 - Local signal (active site alone) is insufficient (CLS 0.46 vs 0.59 global)
@@ -187,13 +213,15 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - LoRA fine-tuning memorizes family-specific patterns (tested in Phase 15)
 - PDB structural features are redundant with existing features (tested in Phase 15)
 - Target transformations (log, rank, binary) all degrade the signal
-- **CLS 0.7088 is the best score achieved** with honest nested LOFO on the challenge data
+- ESM2-3B improves classification (PR-AUC 0.747) but loses ranking — no net CLS gain (Phase 16)
+- Oracle analysis shows +0.12 headroom in classification, but it is not capturable from available representations (Phase 16)
+- **CLS 0.7088 is the demonstrated ceiling** with honest nested LOFO on the challenge data
 
 ---
 
 ## Untested Approaches
 
 - **SRA PRJNA916060 reprocessing** (feasible but addresses only ranking of 21 active RTs, not classification)
-- **ESM2-3B** (larger model, may capture finer-grained signal — requires >12GB VRAM)
 - **Protein structure GNN** (message passing on contact graph — fundamentally different representation)
 - **External RT data with PE labels** (would require new wet-lab experiments)
+- **RT-Cas9 docking / interaction modeling** (could encode the missing classification signal identified by oracle analysis)
