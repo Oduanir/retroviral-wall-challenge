@@ -2,15 +2,17 @@
 
 ## Final Score
 
-**CLS 0.6936** (nested LOFO CV, verified with official evaluator on `submissions/submission_layer_sweep.csv`)
+**CLS 0.7088** (nested LOFO CV, verified with official evaluator on `submissions/submission_improved.csv`)
 
 | Component | Score |
 |-----------|-------|
-| PR-AUC | 0.6930 |
-| W-Spearman | 0.6942 |
-| CLS | 0.6936 |
+| PR-AUC | 0.6834 |
+| W-Spearman | 0.7361 |
+| CLS | 0.7088 |
 
-Best model: blend of 3 models (ElasticNet enriched+ZS + ESM2 **layer 12** mid PCA3 + ESM2 **layer 33** mid PCA3), weights optimized by nested LOFO.
+Best model: blend of 3 models (ElasticNet enriched+ZS + ESM2 **layer 12** mid PCA3 + ESM2 **layer 33** mid PCA3), with **per-fold PCA** and **asymmetric Ridge** (L12 α=12.5, L33 α=7.5), weights optimized by nested LOFO (step 0.05).
+
+Previous best: CLS 0.6936 (transductive PCA, Ridge α=10 symmetric).
 
 ---
 
@@ -22,7 +24,8 @@ Best model: blend of 3 models (ElasticNet enriched+ZS + ESM2 **layer 12** mid PC
 | v1 | EN + Hurdle + ESM2 global | 0.6525 | 3 |
 | v2 | EN enriched + Hurdle + ESM2 global | 0.6685 | 4 |
 | v4 | EN enriched+ZS + ESM2 L33 mid | 0.6882 | 5 |
-| **v5** | **EN enriched+ZS + ESM2 L12 mid + ESM2 L33 mid** | **0.6936** | **11** |
+| v5 | EN enriched+ZS + ESM2 L12 mid + ESM2 L33 mid | 0.6936 | 11 |
+| **v6** | **v5 + per-fold PCA + asymmetric Ridge (12.5/7.5)** | **0.7088** | **14** |
 
 ---
 
@@ -118,6 +121,15 @@ Bottleneck: Retron (PR-AUC 0.42).
 - Mid-region PCA5 adaptation: CLS 0.571
 - KernelRidge + EN + L12 + L33 blend: degrades CLS (0.643)
 - LoRA minimal: not tested (requires GPU)
+
+### Phase 14 — Code modularization + per-fold PCA + hyperparameter optimization
+- Modularized code: `src/blend.py`, `src/bootstrap.py`, updated `src/esm2_features.py`
+- Unit tests: 20 tests covering metrics, blend, normalization
+- **Per-fold PCA**: fitting PCA only on training data per fold (not transductive) → +0.0006 CLS
+- **Finer weight grid** (step 0.05 vs 0.1) → additional gain
+- **Asymmetric Ridge**: L12 α=12.5, L33 α=7.5 (sweep over 110 combos) → **CLS 0.7088**
+- Bootstrap CI: CLS 0.7088 [0.545, 0.797] (std=0.067)
+- Explored but no gain: PCA5/10, BayesianRidge, KernelRidge on raw 1280D, YXDD-anchored embeddings, cosine features, scipy weight refinement, EN alpha sweep
 
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
