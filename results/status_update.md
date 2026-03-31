@@ -202,11 +202,10 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
   - Active-site accessibility: `yxdd_surface_proxy`, `yxdd_local_compactness`, `yxdd_confidence_mean`
   - Template-aligned: `global_vs_local_mmlv_gap`, `global_vs_local_best_gap`
   - Burden: `rnaseh_present_proxy`, `fusion_burden_proxy`
-- **Audit**: `global_vs_local_best_gap` has AUROC 0.779 (best univariate classifier) and is genuinely novel (max|r|=0.27 with existing features). **Caveat**: despite its name, the "local best" component is computed against a fixed MMLV/MMLVPE reference using unaligned RMSD, not against each RT's own best structural match. The feature is therefore a "global best TM minus local MMLV similarity" proxy, not a true per-RT local/global mismatch.
-- **But**: every feature degrades CLS when added to v6's ElasticNet (same α=1.0, l1=0.3, no retuning). Best individual: `yxdd_local_compactness` (CLS -0.001). Worst: `global_vs_local_best_gap` (CLS -0.231 — collapses W-Spearman)
-- Adding all features: CLS 0.318 (catastrophe). Top 2-3: CLS 0.300.
-- **Diagnosis**: features with high classification power (AUROC 0.78) destroy ranking when added to the current pipeline
-- **NO-GO for this integration**: cheap compatibility proxies do not improve v6 in the tested add-on configuration. This does not fully falsify the RT-Cas9 compatibility hypothesis — it shows these particular proxies (coarse, unaligned, fixed reference) are not additive to the current backbone with the current integration method.
+- **Audit** (after fix): `global_vs_local_best_gap` corrected to compute local similarity against all 57 RT structures (not just fixed MMLV). AUROC drops from 0.779 to 0.630 — the inflated value was an artifact of the fixed-reference bug. Best univariate classifier: `global_vs_local_mmlv_gap` (AUROC 0.711).
+- **Rerun with corrected features**: every feature still degrades CLS when added individually to v6's ElasticNet. Best: `yxdd_local_compactness` (delta -0.001). `global_vs_local_best_gap` corrected: delta -0.006 (vs -0.231 before fix).
+- Adding all features: CLS 0.318. Top 2-3: CLS 0.300.
+- **NO-GO for this integration**: cheap compatibility proxies do not improve v6 in add-on mode. This does not fully falsify the RT-Cas9 compatibility hypothesis — it shows these particular proxies (coarse, unaligned local RMSD) are not additive to the current backbone.
 
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB

@@ -87,12 +87,17 @@ def extract_rt_cas9_features():
     mmlv_pdb = STRUCT_DIR / "MMLV-RT.pdb"
     mmlv_ca = _load_ca_coords(mmlv_pdb) if mmlv_pdb.exists() else None
 
-    # Also get "best" PE reference — MMLV-PE if available, else MMLV
-    best_ref_name = "MMLVPE-RT" if "MMLVPE-RT" in sequences else "MMLV-RT"
-    best_ref_seq = sequences.get(best_ref_name, mmlv_seq)
-    best_ref_yxdd = find_yxdd(best_ref_seq) if best_ref_seq else None
-    best_ref_pdb = STRUCT_DIR / f"{best_ref_name}.pdb"
-    best_ref_ca = _load_ca_coords(best_ref_pdb) if best_ref_pdb.exists() else mmlv_ca
+    # Pre-load all RT structures + YXDD positions for local best computation
+    all_ca = {}
+    all_yxdd = {}
+    for name, seq in sequences.items():
+        pdb = STRUCT_DIR / f"{name}.pdb"
+        if pdb.exists():
+            try:
+                all_ca[name] = _load_ca_coords(pdb)
+                all_yxdd[name] = find_yxdd(seq)
+            except Exception:
+                pass
 
     # Get existing FoldSeek TM-scores for global comparison
     foldseek_global_mmlv = dict(zip(train["rt_name"], train["foldseek_TM_MMLV"]))
@@ -161,10 +166,19 @@ def extract_rt_cas9_features():
             feats["global_vs_local_mmlv_gap"] = np.nan
 
         # === Feature 6: global_vs_local_best_gap ===
+        # Global best TM (from FoldSeek, across all refs) minus best LOCAL similarity
+        # across all other RTs with structures. This makes local and global comparable.
         global_tm_best = foldseek_global_best.get(rt_name, np.nan)
-        if ca_coords is not None and best_ref_ca is not None:
-            local_sim_best = _foldseek_local_tm(ca_coords, best_ref_ca, yxdd_pos, best_ref_yxdd)
-            feats["global_vs_local_best_gap"] = global_tm_best - local_sim_best if not np.isnan(local_sim_best) else np.nan
+        if ca_coords is not None and yxdd_pos is not None:
+            best_local_sim = 0.0
+            for ref_name, ref_ca in all_ca.items():
+                if ref_name == rt_name:
+                    continue
+                ref_yxdd = all_yxdd.get(ref_name)
+                sim = _foldseek_local_tm(ca_coords, ref_ca, yxdd_pos, ref_yxdd)
+                if not np.isnan(sim) and sim > best_local_sim:
+                    best_local_sim = sim
+            feats["global_vs_local_best_gap"] = global_tm_best - best_local_sim if best_local_sim > 0 else np.nan
         else:
             feats["global_vs_local_best_gap"] = np.nan
 
