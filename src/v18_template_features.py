@@ -163,9 +163,15 @@ def extract_template_features():
             results.append(feats)
             continue
 
-        n_aligned = len(cand_ca_aligned)
+        n_total = len(cand_ca_aligned)
+        # Count actually aligned residues (non-gap in both sequences)
+        n_aligned = sum(1 for a, b in zip(tm_result.seqxA, tm_result.seqyA)
+                        if a != '-' and b != '-')
+        n_aligned = max(n_aligned, 1)  # avoid division by zero
 
-        # --- Clash features (normalized by aligned region) ---
+        feats["alignment_coverage"] = float(n_aligned / n_total)
+
+        # --- Clash features (normalized by ALIGNED region, not total size) ---
         dist_to_cas9 = cdist(cand_ca_aligned, cas9_ca)
         min_per_residue = dist_to_cas9.min(axis=1)
 
@@ -243,7 +249,7 @@ def extract_template_features():
 
 def _feature_names():
     return [
-        "alignment_tm_score", "alignment_rmsd",
+        "alignment_tm_score", "alignment_rmsd", "alignment_coverage",
         "cas9_clash_fraction", "cas9_clash_severe_fraction",
         "cas9_min_distance", "cas9_contact_fraction",
         "yxdd_to_dna_distance", "yxdd_to_pegrna_distance",
