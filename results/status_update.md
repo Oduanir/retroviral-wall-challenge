@@ -230,6 +230,14 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
   - Dual-objective post-hoc blend (v6 ranking × complex classification): CLS 0.518
 - **Conclusion**: no integration strategy improves over v6 baseline (CLS 0.7088). The corrector with top3 complex features comes closest (0.700) but still degrades both PR-AUC and W-Spearman slightly. The classification signal from complex placement is real (PR-AUC 0.771 in 4th-model mode) but it is not separable from ranking degradation in any tested combination.
 
+### Phase 20 — 3D Graph Neural Network on RT structure
+- Built contact graphs (CA-CA < 10Å) for all 57 RTs from AlphaFold structures
+- Two-view GNN (full graph + active-site subgraph), multi-task (BCE + MSE), ~2K params
+- Node features: one-hot AA, pLDDT, relative position, YXDD indicator, hydrophobicity, charge
+- **Standalone GNN**: CLS 0.000 across all β values (0.3, 0.5, 0.7). W-Spearman 0.000. The network learns nothing generalizable on 50 training samples.
+- **GNN + v6 blend** (strict nested LOFO, 49 GNN trainings): CLS 0.000 (CPU) / CLS 0.173 (GPU). On most folds w_v6 ≈ 1.0 (GNN ignored), but on 2 folds GNN gets weight and destroys the score.
+- **NO-GO**: n=57 is fundamentally too small for any neural network, even with 2K parameters and aggressive regularization. Linear models (ElasticNet, Ridge) remain the right complexity for this dataset.
+
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
 - Only 21 active RTs in SRA (inactive ones not sequenced)
@@ -239,7 +247,7 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 ## Final Diagnosis
 
-The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~130+ experiments over 19 phases).
+The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~140+ experiments over 20 phases).
 
 - Global features (FoldSeek, thermostability, ESM2) **are** the signal
 - Local signal (active site alone) is insufficient (CLS 0.46 vs 0.59 global)
