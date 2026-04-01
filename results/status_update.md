@@ -210,8 +210,9 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 ### Phase 18 — Template-based RT-Cas9 interaction modeling
 - Placed each of 57 RTs into the PE cryo-EM complex (PDB 8WUS, Shuto et al. Nature 2024) via TMalign structural alignment onto MMLV-RT chain
 - 12 compatibility features extracted: clash fractions with Cas9, YXDD-to-DNA/pegRNA distances, active site orientation, protrusion, N-term to Cas9 distance
+- **Implementation caveat**: clash/contact/protrusion fractions are normalized by total RT size, not by the number of TM-aligned residues. This means they still partially proxy for RT size rather than purely measuring complex compatibility. A stricter implementation would normalize by aligned-region length only.
 - **Audit**: genuinely novel features (cas9_clash_fraction max|r|=0.44, cas9_min_distance max|r|=0.36, nterm_to_cas9_distance max|r|=0.22) — not redundant with existing backbone
-- **But**: none of the genuinely novel features improve CLS. Best individual: cas9_clash_severe_fraction (delta -0.002)
+- **But**: none of the genuinely novel features improve CLS. Best individual: cas9_clash_severe_fraction (delta -0.002). EN retuning sweep was not fully nested (α/l1 selected ex-post, not per inner fold), so individual deltas are slightly optimistic — but all remain negative.
 - `alignment_tm_score` as 4th blend model gives CLS 0.7119 (+0.003), but this feature is redundant with foldseek_TM_MMLV (|r|=0.95) — the gain comes from TMalign vs FoldSeek numerical differences, not from complex compatibility
 - **NO-GO**: template-based placement does not reveal exploitable RT-Cas9 compatibility signal beyond what FoldSeek already captures
 
