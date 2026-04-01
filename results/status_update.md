@@ -216,15 +216,19 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - `alignment_tm_score` as 4th blend model gives CLS 0.7119 (+0.003), but this feature is redundant with foldseek_TM_MMLV (|r|=0.95) — the gain comes from TMalign vs FoldSeek numerical differences, not from complex compatibility
 - **NO-GO**: template-based placement does not reveal exploitable RT-Cas9 compatibility signal beyond what FoldSeek already captures
 
-### Phase 19 — Moonshot: PE complex compatibility modeling (partial execution)
-- Placed 57 RTs in PE complex template 8WUS (termination state) via TMalign. Second state 8WUT was loaded but cross-state robustness features were computed and never evaluated.
-- 23 features extracted from primary template, normalized by aligned residue count. 21 pass confounder check (not size/MMLV proxies).
-- **New features include**: alignment strain (AUROC 0.73), cas9 interface density (AUROC 0.70), deformation cost, fusion topology, nucleic acid contact fractions
-- **Integration tested**: each feature individually as 4th Ridge model in v6 blend, and all-novel-features as single Ridge model. Not tested: complex-only benchmark, v6+complex corrector, or full separate-modality integration as the plan described.
-- **Classification signal is strong**: top3 novel features give PR-AUC 0.786 (best ever recorded) but W-Spearman collapses to 0.485 → CLS 0.600
-- Every individual feature degrades CLS when added as 4th model. Best: nterm_to_cas9 (-0.026). Worst: termini_asymmetry_cas9 (-0.189).
-- All-novel-features as Ridge model: CLS 0.540 (PR-AUC 0.751 but W-Spearman 0.422)
-- **Observed pattern**: the classification signal from complex placement is real and strong, but adding it to v6 (as tested here) systematically degrades W-Spearman. Whether a different integration strategy (corrector, separate modality) could avoid this is untested.
+### Phase 19 — Moonshot: Full PE complex compatibility modeling (2 states, all integrations)
+- Placed 57 RTs in two PE complex states (8WUS termination + 8WUT initiation) via TMalign
+- 23 features per state + 23 cross-state robustness features (absolute difference between states). 44 features pass confounder check (not size/MMLV proxies).
+- **New features include**: alignment strain (AUROC 0.73), cas9 interface density (AUROC 0.70), deformation cost, fusion topology, nucleic acid contact fractions, cross-state variance
+- **All promised integrations tested**:
+  - Complex-only Ridge regression: CLS 0.495
+  - Complex-only Logistic classification: CLS 0.456
+  - Complex top3 Logistic: CLS 0.589 (PR-AUC 0.668)
+  - v6 + complex all (4th Ridge model): CLS 0.668
+  - v6 + complex top3 (4th Ridge model): CLS 0.563 (PR-AUC 0.771)
+  - v6 + corrector with complex features (6 configs, λ=0.05–0.2): best CLS 0.700 (top3, λ=0.1)
+  - Dual-objective post-hoc blend (v6 ranking × complex classification): CLS 0.518
+- **Conclusion**: no integration strategy improves over v6 baseline (CLS 0.7088). The corrector with top3 complex features comes closest (0.700) but still degrades both PR-AUC and W-Spearman slightly. The classification signal from complex placement is real (PR-AUC 0.771 in 4th-model mode) but it is not separable from ranking degradation in any tested combination.
 
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
@@ -246,8 +250,8 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - Target transformations (log, rank, binary) all degrade the signal
 - ESM2-3B improves classification (PR-AUC 0.747) but loses ranking — no net CLS gain (Phase 16)
 - Oracle analysis shows +0.12 headroom in classification, but it is not capturable from available representations (Phase 16)
-- Complex placement features achieve PR-AUC 0.786 (Phase 19) but degrade W-Spearman when added to v6 as a 4th Ridge model. Whether a different integration strategy could preserve ranking is untested.
-- **CLS 0.7088 is the best score achieved** with honest nested LOFO on the challenge data. All tested integration methods (feature addition, 4th model, corrector) degrade CLS when adding classification-oriented signals.
+- Complex placement features achieve PR-AUC 0.771 (Phase 19) but degrade W-Spearman in every tested integration: 4th model, corrector, dual blend, complex-only
+- **CLS 0.7088 is the demonstrated ceiling** with honest nested LOFO on the challenge data. All tested integration methods (feature addition, 4th model, corrector, dual-objective blend, complex-only modality) degrade CLS when adding classification-oriented signals. The classification and ranking signals are not separable in the available feature space.
 
 ---
 

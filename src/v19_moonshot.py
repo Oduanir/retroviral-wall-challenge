@@ -335,8 +335,15 @@ def main():
         robust_cols = [c for c in robustness.columns if c.endswith('_var')]
         print(f'  {len(robust_cols)} robustness features computed')
 
-    # Use primary template (8WUS) as main feature set
+    # Merge robustness features into primary
     primary = dfs[list(dfs.keys())[0]].copy()
+    if len(dfs) >= 2:
+        robustness = robustness.reset_index(drop=True)
+        robust_feat_cols = [c for c in robustness.columns if c.endswith('_var')]
+        for c in robust_feat_cols:
+            primary = primary.merge(robustness[['rt_name', c]], on='rt_name', how='left')
+        print(f'  Merged {len(robust_feat_cols)} robustness features into primary set')
+
     feat_cols = [c for c in primary.columns if c != 'rt_name']
 
     # Save
@@ -527,56 +534,282 @@ def main():
         r = compute_cls(oof['active'].values, oof['predicted_score'].values, oof['pe_efficiency_pct'].values)
         return r, oof
 
-    # --- Experiments ---
+    # --- Helper: complex-only LOFO (no v6 backbone) ---
+    def run_complex_only(complex_features, target='regression'):
+        """Complex-view only: Ridge or Logistic on complex features."""
+        all_oof = []
+        for outer_family in splits:
+            outer_rts = splits[outer_family]; om = train['rt_name'].isin(outer_rts); im = ~om
+            isp = {f: rts for f, rts in splits.items() if f != outer_family}
+            idf = train[im].reset_index(drop=True)
+            n = len(idf)
+            oof_vals = np.full(n, np.nan)
+            for ifam, irts in isp.items():
+                tm = idf['rt_name'].isin(irts); trm = ~tm
+                X_tr = idf.loc[trm, complex_features].fillna(0).values
+                X_te = idf.loc[tm, complex_features].fillna(0).values
+                if target == 'regression':
+                    y = idf.loc[trm, 'pe_efficiency_pct'].values
+                    oof_vals[tm.values] = make_pipeline(StandardScaler(),Ridge(alpha=10.0)).fit(X_tr,y).predict(X_te)
+                else:
+                    y = idf.loc[trm, 'active'].values
+                    oof_vals[tm.values] = make_pipeline(StandardScaler(),
+                        LogisticRegression(C=0.1,max_iter=10000)).fit(X_tr,y).predict_proba(X_te)[:,1]
+            # Predict outer
+            yi = train.loc[im,'pe_efficiency_pct'].values if target=='regression' else train.loc[im,'active'].values
+            X_full = train.loc[im, complex_features].fillna(0).values
+            X_out = train.loc[om, complex_features].fillna(0).values
+            if target == 'regression':
+                pred = make_pipeline(StandardScaler(),Ridge(alpha=10.0)).fit(X_full,yi).predict(X_out)
+            else:
+                pred = make_pipeline(StandardScaler(),
+                    LogisticRegression(C=0.1,max_iter=10000)).fit(X_full,yi).predict_proba(X_out)[:,1]
+            fd = train.loc[om,['rt_name','active','pe_efficiency_pct','rt_family']].copy()
+            fd['predicted_score'] = pred; all_oof.append(fd)
+        oof = pd.concat(all_oof).set_index('rt_name').loc[gt_order].reset_index()
+        return compute_cls(oof['active'].values, oof['predicted_score'].values, oof['pe_efficiency_pct'].values), oof
+
+    # --- Helper: v6 + complex corrector ---
+    def run_v6_with_corrector(complex_features, lambda_val=0.1):
+        """Run v6 then apply a classification corrector using complex features."""
+        all_oof = []
+        for outer_family in splits:
+            outer_rts = splits[outer_family]; om = train['rt_name'].isin(outer_rts); im = ~om
+            isp = {f: rts for f, rts in splits.items() if f != outer_family}
+            idf = train[im].reset_index(drop=True)
+            n = len(idf)
+
+            il12 = np.array([l12_raw[r] for r in idf['rt_name']])
+            il33 = np.array([l33_raw[r] for r in idf['rt_name']])
+            p12 = PCA(3).fit(il12); p33 = PCA(3).fit(il33)
+            il12p = p12.transform(il12); il33p = p33.transform(il33)
+            ol12p = p12.transform(np.array([l12_raw[r] for r in train.loc[om,'rt_name']]))
+            ol33p = p33.transform(np.array([l33_raw[r] for r in train.loc[om,'rt_name']]))
+
+            ioof = {'EN': np.full(n, np.nan), 'L12': np.full(n, np.nan), 'L33': np.full(n, np.nan)}
+            for ifam, irts in isp.items():
+                tm = idf['rt_name'].isin(irts); trm = ~tm
+                y = idf.loc[trm, 'pe_efficiency_pct'].values
+                ioof['EN'][tm.values] = make_pipeline(SimpleImputer(strategy='median'),StandardScaler(),
+                    ElasticNet(alpha=1.0,l1_ratio=0.3,max_iter=10000)).fit(
+                    idf.loc[trm,FEATURES_BASE].values,y).predict(idf.loc[tm,FEATURES_BASE].values)
+                ioof['L12'][tm.values] = make_pipeline(StandardScaler(),Ridge(alpha=12.5)).fit(
+                    il12p[trm.values],y).predict(il12p[tm.values])
+                ioof['L33'][tm.values] = make_pipeline(StandardScaler(),Ridge(alpha=7.5)).fit(
+                    il33p[trm.values],y).predict(il33p[tm.values])
+
+            best_c, best_w = -1, (0.33,0.33,0.34)
+            for w in iprod(np.arange(0,1.05,0.05), repeat=3):
+                if abs(sum(w)-1.0) > 0.025: continue
+                b = w[0]*norm(ioof['EN']) + w[1]*norm(ioof['L12']) + w[2]*norm(ioof['L33'])
+                cc = compute_cls(idf['active'].values, b, idf['pe_efficiency_pct'].values)['cls']
+                if cc > best_c: best_c, best_w = cc, w
+
+            inner_blend = best_w[0]*norm(ioof['EN']) + best_w[1]*norm(ioof['L12']) + best_w[2]*norm(ioof['L33'])
+
+            # Train corrector on complex features + v6 score
+            X_corr = np.column_stack([
+                inner_blend,
+                idf[complex_features].fillna(0).values
+            ])
+            corr = make_pipeline(StandardScaler(), LogisticRegression(C=0.1, max_iter=10000))
+            corr.fit(X_corr, idf['active'].values)
+
+            # Outer predictions
+            yi = train.loc[im,'pe_efficiency_pct'].values
+            pr = {}
+            pr['EN'] = make_pipeline(SimpleImputer(strategy='median'),StandardScaler(),
+                ElasticNet(alpha=1.0,l1_ratio=0.3,max_iter=10000)).fit(
+                train.loc[im,FEATURES_BASE].values,yi).predict(train.loc[om,FEATURES_BASE].values)
+            pr['L12'] = make_pipeline(StandardScaler(),Ridge(alpha=12.5)).fit(il12p,yi).predict(ol12p)
+            pr['L33'] = make_pipeline(StandardScaler(),Ridge(alpha=7.5)).fit(il33p,yi).predict(ol33p)
+
+            oen = (pr['EN']-ioof['EN'].min())/max(ioof['EN'].max()-ioof['EN'].min(),1e-12)
+            ol12 = (pr['L12']-ioof['L12'].min())/max(ioof['L12'].max()-ioof['L12'].min(),1e-12)
+            ol33 = (pr['L33']-ioof['L33'].min())/max(ioof['L33'].max()-ioof['L33'].min(),1e-12)
+            outer_blend = best_w[0]*oen + best_w[1]*ol12 + best_w[2]*ol33
+
+            X_corr_out = np.column_stack([
+                outer_blend,
+                train.loc[om, complex_features].fillna(0).values
+            ])
+            p_active = corr.predict_proba(X_corr_out)[:, 1]
+            adjusted = outer_blend + lambda_val * (p_active - 0.5)
+
+            fd = train.loc[om,['rt_name','active','pe_efficiency_pct','rt_family']].copy()
+            fd['predicted_score'] = adjusted; all_oof.append(fd)
+
+        oof = pd.concat(all_oof).set_index('rt_name').loc[gt_order].reset_index()
+        return compute_cls(oof['active'].values, oof['predicted_score'].values, oof['pe_efficiency_pct'].values), oof
+
+    # --- Helper: dual-objective post-hoc blend ---
+    def run_dual_blend(complex_features):
+        """Generate v6 scores and complex scores independently, blend post-hoc."""
+        all_oof = []
+        for outer_family in splits:
+            outer_rts = splits[outer_family]; om = train['rt_name'].isin(outer_rts); im = ~om
+            isp = {f: rts for f, rts in splits.items() if f != outer_family}
+            idf = train[im].reset_index(drop=True)
+            n = len(idf)
+
+            # v6 inner LOFO
+            il12 = np.array([l12_raw[r] for r in idf['rt_name']])
+            il33 = np.array([l33_raw[r] for r in idf['rt_name']])
+            p12 = PCA(3).fit(il12); p33 = PCA(3).fit(il33)
+            il12p = p12.transform(il12); il33p = p33.transform(il33)
+            ol12p = p12.transform(np.array([l12_raw[r] for r in train.loc[om,'rt_name']]))
+            ol33p = p33.transform(np.array([l33_raw[r] for r in train.loc[om,'rt_name']]))
+
+            ioof_v6 = {'EN': np.full(n, np.nan), 'L12': np.full(n, np.nan), 'L33': np.full(n, np.nan)}
+            ioof_cx = np.full(n, np.nan)
+            for ifam, irts in isp.items():
+                tm = idf['rt_name'].isin(irts); trm = ~tm
+                y = idf.loc[trm, 'pe_efficiency_pct'].values
+                y_bin = idf.loc[trm, 'active'].values
+                ioof_v6['EN'][tm.values] = make_pipeline(SimpleImputer(strategy='median'),StandardScaler(),
+                    ElasticNet(alpha=1.0,l1_ratio=0.3,max_iter=10000)).fit(
+                    idf.loc[trm,FEATURES_BASE].values,y).predict(idf.loc[tm,FEATURES_BASE].values)
+                ioof_v6['L12'][tm.values] = make_pipeline(StandardScaler(),Ridge(alpha=12.5)).fit(
+                    il12p[trm.values],y).predict(il12p[tm.values])
+                ioof_v6['L33'][tm.values] = make_pipeline(StandardScaler(),Ridge(alpha=7.5)).fit(
+                    il33p[trm.values],y).predict(il33p[tm.values])
+                X_cx_tr = idf.loc[trm, complex_features].fillna(0).values
+                X_cx_te = idf.loc[tm, complex_features].fillna(0).values
+                ioof_cx[tm.values] = make_pipeline(StandardScaler(),
+                    LogisticRegression(C=0.1,max_iter=10000)).fit(X_cx_tr,y_bin).predict_proba(X_cx_te)[:,1]
+
+            # v6 weight optimization
+            best_c_v6, best_w_v6 = -1, (0.33,0.33,0.34)
+            for w in iprod(np.arange(0,1.05,0.05), repeat=3):
+                if abs(sum(w)-1.0) > 0.025: continue
+                b = w[0]*norm(ioof_v6['EN']) + w[1]*norm(ioof_v6['L12']) + w[2]*norm(ioof_v6['L33'])
+                cc = compute_cls(idf['active'].values, b, idf['pe_efficiency_pct'].values)['cls']
+                if cc > best_c_v6: best_c_v6, best_w_v6 = cc, w
+
+            inner_v6 = best_w_v6[0]*norm(ioof_v6['EN']) + best_w_v6[1]*norm(ioof_v6['L12']) + best_w_v6[2]*norm(ioof_v6['L33'])
+            inner_cx = norm(ioof_cx)
+
+            # Optimize alpha: score = alpha * v6 + (1-alpha) * complex
+            best_alpha, best_cls_alpha = 1.0, -1
+            for alpha in np.arange(0, 1.05, 0.05):
+                b = alpha * inner_v6 + (1-alpha) * inner_cx
+                cc = compute_cls(idf['active'].values, b, idf['pe_efficiency_pct'].values)['cls']
+                if cc > best_cls_alpha: best_cls_alpha, best_alpha = cc, alpha
+
+            # Outer predictions
+            yi = train.loc[im,'pe_efficiency_pct'].values
+            yi_bin = train.loc[im,'active'].values
+            pr_en = make_pipeline(SimpleImputer(strategy='median'),StandardScaler(),
+                ElasticNet(alpha=1.0,l1_ratio=0.3,max_iter=10000)).fit(
+                train.loc[im,FEATURES_BASE].values,yi).predict(train.loc[om,FEATURES_BASE].values)
+            pr_l12 = make_pipeline(StandardScaler(),Ridge(alpha=12.5)).fit(il12p,yi).predict(ol12p)
+            pr_l33 = make_pipeline(StandardScaler(),Ridge(alpha=7.5)).fit(il33p,yi).predict(ol33p)
+            pr_cx = make_pipeline(StandardScaler(),
+                LogisticRegression(C=0.1,max_iter=10000)).fit(
+                train.loc[im,complex_features].fillna(0).values, yi_bin).predict_proba(
+                train.loc[om,complex_features].fillna(0).values)[:,1]
+
+            oen = (pr_en-ioof_v6['EN'].min())/max(ioof_v6['EN'].max()-ioof_v6['EN'].min(),1e-12)
+            ol12n = (pr_l12-ioof_v6['L12'].min())/max(ioof_v6['L12'].max()-ioof_v6['L12'].min(),1e-12)
+            ol33n = (pr_l33-ioof_v6['L33'].min())/max(ioof_v6['L33'].max()-ioof_v6['L33'].min(),1e-12)
+            outer_v6 = best_w_v6[0]*oen + best_w_v6[1]*ol12n + best_w_v6[2]*ol33n
+            outer_cx = (pr_cx - ioof_cx.min()) / max(ioof_cx.max()-ioof_cx.min(), 1e-12)
+
+            blended = best_alpha * norm(outer_v6) + (1-best_alpha) * norm(outer_cx)
+
+            fd = train.loc[om,['rt_name','active','pe_efficiency_pct','rt_family']].copy()
+            fd['predicted_score'] = blended; all_oof.append(fd)
+
+        oof = pd.concat(all_oof).set_index('rt_name').loc[gt_order].reset_index()
+        return compute_cls(oof['active'].values, oof['predicted_score'].values, oof['pe_efficiency_pct'].values), oof
+
+    # ===================================================================
+    # EXPERIMENTS
+    # ===================================================================
     print('\n--- Experiments ---')
+    all_results = {}
 
-    # Baseline
-    r_base, _ = run_lofo_blend(FEATURES_BASE)
-    print(f'Baseline v6:                      CLS={r_base["cls"]:.4f}  PR={r_base["pr_auc"]:.4f}  WSp={r_base["w_spearman"]:.4f}')
+    # 1. Baseline v6
+    r_base, oof_base = run_lofo_blend(FEATURES_BASE)
+    all_results['1_baseline'] = r_base
+    print(f'1. Baseline v6:                   CLS={r_base["cls"]:.4f}  PR={r_base["pr_auc"]:.4f}  WSp={r_base["w_spearman"]:.4f}')
 
-    # Complex-only (Ridge on all novel features)
-    if genuinely_novel:
-        r_cx, _ = run_lofo_blend(FEATURES_BASE, extra_ridge_features=genuinely_novel)
-        print(f'v6 + complex (all novel):         CLS={r_cx["cls"]:.4f}  PR={r_cx["pr_auc"]:.4f}  WSp={r_cx["w_spearman"]:.4f}  delta={r_cx["cls"]-r_base["cls"]:+.4f}')
-
-    # Top features by AUROC (genuinely novel only)
+    # Filter novel features
     novel_by_auroc = [(c, a) for c, a in good_feats if c in genuinely_novel]
     novel_by_auroc.sort(key=lambda x: -x[1])
+    top3 = [c for c, _ in novel_by_auroc[:3]] if len(novel_by_auroc) >= 3 else genuinely_novel[:3]
+    top5 = [c for c, _ in novel_by_auroc[:5]] if len(novel_by_auroc) >= 5 else genuinely_novel[:5]
 
-    if len(novel_by_auroc) >= 3:
-        top3 = [c for c, _ in novel_by_auroc[:3]]
-        r_t3, _ = run_lofo_blend(FEATURES_BASE, extra_ridge_features=top3)
-        print(f'v6 + top3 novel:                  CLS={r_t3["cls"]:.4f}  PR={r_t3["pr_auc"]:.4f}  WSp={r_t3["w_spearman"]:.4f}  delta={r_t3["cls"]-r_base["cls"]:+.4f}  {top3}')
-
-    if len(novel_by_auroc) >= 5:
-        top5 = [c for c, _ in novel_by_auroc[:5]]
-        r_t5, _ = run_lofo_blend(FEATURES_BASE, extra_ridge_features=top5)
-        print(f'v6 + top5 novel:                  CLS={r_t5["cls"]:.4f}  PR={r_t5["pr_auc"]:.4f}  WSp={r_t5["w_spearman"]:.4f}  delta={r_t5["cls"]-r_base["cls"]:+.4f}')
-
-    # Individual features as 4th model
-    print('\nIndividual novel features as 4th Ridge model:')
-    for c in genuinely_novel:
-        if train[c].isna().sum() > 20: continue
-        r_i, _ = run_lofo_blend(FEATURES_BASE, extra_ridge_features=[c])
-        delta = r_i['cls'] - r_base['cls']
-        tag = ' ***' if delta > 0 else ''
-        print(f'  +{c:<28s} CLS={r_i["cls"]:.4f}  delta={delta:+.4f}{tag}')
-
-    # Per-family breakdown for best result
-    all_results = {'baseline': r_base}
+    # 2. Complex-only (regression)
     if genuinely_novel:
-        all_results['complex_all'] = r_cx
-    best_name = max(all_results, key=lambda k: all_results[k]['cls'])
+        r, _ = run_complex_only(genuinely_novel, target='regression')
+        all_results['2a_complex_only_reg'] = r
+        print(f'2a. Complex-only (Ridge reg):     CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}')
 
-    print(f'\n--- SUMMARY ---')
+        r, _ = run_complex_only(genuinely_novel, target='classification')
+        all_results['2b_complex_only_cls'] = r
+        print(f'2b. Complex-only (Logistic cls):  CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}')
+
+        r, _ = run_complex_only(top3, target='classification')
+        all_results['2c_complex_top3_cls'] = r
+        print(f'2c. Complex top3 (Logistic cls):  CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}')
+
+    # 3. v6 + complex as 4th Ridge model
+    if genuinely_novel:
+        r, _ = run_lofo_blend(FEATURES_BASE, extra_ridge_features=genuinely_novel)
+        all_results['3a_v6+complex_all'] = r
+        print(f'3a. v6 + complex (all, 4th):      CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}  delta={r["cls"]-r_base["cls"]:+.4f}')
+
+        r, _ = run_lofo_blend(FEATURES_BASE, extra_ridge_features=top3)
+        all_results['3b_v6+complex_top3'] = r
+        print(f'3b. v6 + complex (top3, 4th):     CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}  delta={r["cls"]-r_base["cls"]:+.4f}')
+
+    # 4. v6 + complex corrector
+    if genuinely_novel:
+        for lam in [0.05, 0.1, 0.2]:
+            r, _ = run_v6_with_corrector(genuinely_novel, lambda_val=lam)
+            all_results[f'4a_corrector_lam{lam}'] = r
+            print(f'4a. v6 + corrector (all, λ={lam}):  CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}  delta={r["cls"]-r_base["cls"]:+.4f}')
+
+        for lam in [0.05, 0.1, 0.2]:
+            r, _ = run_v6_with_corrector(top3, lambda_val=lam)
+            all_results[f'4b_corrector_top3_lam{lam}'] = r
+            print(f'4b. v6 + corrector (top3, λ={lam}): CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}  delta={r["cls"]-r_base["cls"]:+.4f}')
+
+    # 5. Dual-objective post-hoc blend (V20 preview)
+    if genuinely_novel:
+        r, _ = run_dual_blend(genuinely_novel)
+        all_results['5a_dual_blend_all'] = r
+        print(f'5a. Dual blend (all novel):        CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}  delta={r["cls"]-r_base["cls"]:+.4f}')
+
+        r, _ = run_dual_blend(top3)
+        all_results['5b_dual_blend_top3'] = r
+        print(f'5b. Dual blend (top3):             CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}  delta={r["cls"]-r_base["cls"]:+.4f}')
+
+    # --- SUMMARY ---
+    print(f'\n{"="*70}')
+    print('SUMMARY')
+    print('='*70)
     for n, r in sorted(all_results.items(), key=lambda x: -x[1]['cls']):
-        print(f'  {n:<30s} CLS={r["cls"]:.4f}')
+        tag = ' ***' if r['cls'] > r_base['cls'] else ''
+        print(f'  {n:<35s} CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}{tag}')
+
+    best_name = max(all_results, key=lambda k: all_results[k]['cls'])
     print(f'\nBest: {best_name}  CLS={all_results[best_name]["cls"]:.4f}')
 
     if all_results[best_name]['cls'] > 0.7088:
         print('\n*** NEW RECORD ***')
     else:
         print(f'\nNo improvement over 0.7088.')
+
+    # Per-family for best
+    print('\nPer-family PR-AUC (baseline):')
+    for fam in sorted(oof_base['rt_family'].unique()):
+        mask = oof_base['rt_family'] == fam
+        n_a = int(oof_base.loc[mask,'active'].sum())
+        if 0 < n_a < mask.sum():
+            pr = average_precision_score(oof_base.loc[mask,'active'], oof_base.loc[mask,'predicted_score'])
+            print(f'  {fam:<25s} PR-AUC={pr:.3f}')
 
     print('\nDone.')
 
