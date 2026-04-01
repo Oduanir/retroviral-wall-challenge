@@ -251,7 +251,7 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - ESM2-3B improves classification (PR-AUC 0.747) but loses ranking — no net CLS gain (Phase 16)
 - Oracle analysis shows +0.12 headroom in classification, but it is not capturable from available representations (Phase 16)
 - Complex placement features achieve PR-AUC 0.771 (Phase 19) but degrade W-Spearman in every tested integration: 4th model, corrector, dual blend, complex-only
-- **CLS 0.7088 is the demonstrated ceiling** with honest nested LOFO on the challenge data. All tested integration methods (feature addition, 4th model, corrector, dual-objective blend, complex-only modality) degrade CLS when adding classification-oriented signals. The classification and ranking signals are not separable in the available feature space.
+- **CLS 0.7088 is the best score achieved** with honest nested LOFO on the challenge data. No tested integration method (feature addition, 4th model, corrector, dual-objective blend, complex-only modality) improves CLS when adding classification-oriented signals. Note: all complex-view sub-models used fixed hyperparameters (Ridge α=10, Logistic C=0.1); a more thorough HP search within nested LOFO could in principle change the result, but the consistent negative direction across all integration strategies makes a breakthrough unlikely.
 
 ---
 
