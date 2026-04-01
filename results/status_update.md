@@ -207,6 +207,14 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - Adding all features: CLS 0.318. Top 2-3: CLS 0.300.
 - **NO-GO for this integration**: cheap compatibility proxies do not improve v6 in add-on mode. This does not fully falsify the RT-Cas9 compatibility hypothesis — it shows these particular proxies (coarse, unaligned local RMSD) are not additive to the current backbone.
 
+### Phase 18 — Template-based RT-Cas9 interaction modeling
+- Placed each of 57 RTs into the PE cryo-EM complex (PDB 8WUS, Shuto et al. Nature 2024) via TMalign structural alignment onto MMLV-RT chain
+- 12 compatibility features extracted: clash fractions with Cas9, YXDD-to-DNA/pegRNA distances, active site orientation, protrusion, N-term to Cas9 distance
+- **Audit**: genuinely novel features (cas9_clash_fraction max|r|=0.44, cas9_min_distance max|r|=0.36, nterm_to_cas9_distance max|r|=0.22) — not redundant with existing backbone
+- **But**: none of the genuinely novel features improve CLS. Best individual: cas9_clash_severe_fraction (delta -0.002)
+- `alignment_tm_score` as 4th blend model gives CLS 0.7119 (+0.003), but this feature is redundant with foldseek_TM_MMLV (|r|=0.95) — the gain comes from TMalign vs FoldSeek numerical differences, not from complex compatibility
+- **NO-GO**: template-based placement does not reveal exploitable RT-Cas9 compatibility signal beyond what FoldSeek already captures
+
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
 - Only 21 active RTs in SRA (inactive ones not sequenced)
@@ -216,7 +224,7 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 ## Final Diagnosis
 
-The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~110+ experiments over 17 phases).
+The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~120+ experiments over 18 phases).
 
 - Global features (FoldSeek, thermostability, ESM2) **are** the signal
 - Local signal (active site alone) is insufficient (CLS 0.46 vs 0.59 global)
@@ -236,4 +244,4 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - **SRA PRJNA916060 reprocessing** (feasible but addresses only ranking of 21 active RTs, not classification)
 - **Protein structure GNN** (message passing on contact graph — fundamentally different representation)
 - **External RT data with PE labels** (would require new wet-lab experiments)
-- **RT-Cas9 docking / interaction modeling** (cheap proxies failed in Phase 17 add-on test, but the implementation had limitations: fixed reference, unaligned RMSD, no model retuning. Full docking or properly aligned local TM-scores might still capture genuine interaction signal.)
+- **RT-Cas9 full docking with side-chain repacking** (template-based rigid placement in Phase 18 showed no signal; flexible docking might differ, but the cheap and intermediate versions both failed)
