@@ -29,7 +29,7 @@ from src.esm2_features import find_yxdd
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.nn import NNConv, global_mean_pool
 
 DATA_DIR = ROOT / "data" / "raw"
 STRUCT_DIR = DATA_DIR / "structures"
@@ -147,44 +147,69 @@ def build_graph(pdb_path, sequence, contact_threshold=10.0):
 # ===========================================================================
 
 class RTGraphNet(nn.Module):
-    def __init__(self, node_dim=25, hidden=32, dropout=0.3):
+    def __init__(self, node_dim=25, edge_dim=2, hidden=32, dropout=0.3):
         super().__init__()
-        # Full graph branch
-        self.conv1_full = GCNConv(node_dim, hidden)
-        self.conv2_full = GCNConv(hidden, hidden)
-        # Site graph branch
-        self.conv1_site = GCNConv(node_dim, hidden)
-        self.conv2_site = GCNConv(hidden, hidden)
+        # NNConv: edge-conditioned convolution that consumes edge_attr
+        # edge network maps edge_dim -> node_dim * hidden (weight matrix per edge)
+        self.edge_nn1_full = nn.Sequential(nn.Linear(edge_dim, node_dim * hidden))
+        self.conv1_full = NNConv(node_dim, hidden, self.edge_nn1_full, aggr='mean')
+        self.edge_nn2_full = nn.Sequential(nn.Linear(edge_dim, hidden * hidden))
+        self.conv2_full = NNConv(hidden, hidden, self.edge_nn2_full, aggr='mean')
+
+        self.edge_nn1_site = nn.Sequential(nn.Linear(edge_dim, node_dim * hidden))
+        self.conv1_site = NNConv(node_dim, hidden, self.edge_nn1_site, aggr='mean')
+        self.edge_nn2_site = nn.Sequential(nn.Linear(edge_dim, hidden * hidden))
+        self.conv2_site = NNConv(hidden, hidden, self.edge_nn2_site, aggr='mean')
+
         # Heads
         self.head_cls = nn.Linear(hidden * 2, 1)
         self.head_reg = nn.Linear(hidden * 2, 1)
         self.dropout = nn.Dropout(dropout)
+        self._hidden = hidden
+
+    def _conv_branch(self, x, edge_index, edge_attr, conv1, conv2):
+        x = F.relu(conv1(x, edge_index, edge_attr))
+        x = self.dropout(x)
+        x = F.relu(conv2(x, edge_index, edge_attr))
+        x = self.dropout(x)
+        batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        return global_mean_pool(x, batch)
 
     def forward(self, full_graph, site_graph=None):
-        # Full branch
-        x_f = F.relu(self.conv1_full(full_graph.x, full_graph.edge_index))
-        x_f = self.dropout(x_f)
-        x_f = F.relu(self.conv2_full(x_f, full_graph.edge_index))
-        x_f = self.dropout(x_f)
-        batch_f = torch.zeros(full_graph.num_nodes, dtype=torch.long, device=x_f.device)
-        emb_full = global_mean_pool(x_f, batch_f)  # [1, hidden]
+        emb_full = self._conv_branch(
+            full_graph.x, full_graph.edge_index, full_graph.edge_attr,
+            self.conv1_full, self.conv2_full)
 
-        # Site branch
-        if site_graph is not None and site_graph.num_nodes > 0:
-            x_s = F.relu(self.conv1_site(site_graph.x, site_graph.edge_index))
-            x_s = self.dropout(x_s)
-            x_s = F.relu(self.conv2_site(x_s, site_graph.edge_index))
-            x_s = self.dropout(x_s)
-            batch_s = torch.zeros(site_graph.num_nodes, dtype=torch.long, device=x_s.device)
-            emb_site = global_mean_pool(x_s, batch_s)  # [1, hidden]
+        if site_graph is not None and site_graph.num_nodes > 0 and site_graph.edge_index.numel() > 0:
+            emb_site = self._conv_branch(
+                site_graph.x, site_graph.edge_index, site_graph.edge_attr,
+                self.conv1_site, self.conv2_site)
         else:
-            emb_site = torch.zeros(1, self.conv2_site.out_channels, device=emb_full.device)
+            emb_site = torch.zeros(1, self._hidden, device=emb_full.device)
 
-        emb = torch.cat([emb_full, emb_site], dim=1)  # [1, hidden*2]
-
-        logit_cls = self.head_cls(emb)  # [1, 1]
-        pred_reg = self.head_reg(emb)   # [1, 1]
+        emb = torch.cat([emb_full, emb_site], dim=1)
+        logit_cls = self.head_cls(emb)
+        pred_reg = self.head_reg(emb)
         return logit_cls.squeeze(), pred_reg.squeeze(), emb.squeeze()
+
+
+# ===========================================================================
+# DEVICE
+# ===========================================================================
+
+def _get_device():
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return torch.device('mps')
+    return torch.device('cpu')
+
+def _graph_to_device(g, device):
+    """Move a PyG Data object to device."""
+    if g is None:
+        return None
+    return Data(x=g.x.to(device), edge_index=g.edge_index.to(device),
+                edge_attr=g.edge_attr.to(device), num_nodes=g.num_nodes)
 
 
 # ===========================================================================
@@ -192,9 +217,11 @@ class RTGraphNet(nn.Module):
 # ===========================================================================
 
 def train_gnn(graphs_train, labels_active, labels_eff, n_epochs=80, lr=1e-3,
-              wd=1e-2, alpha=0.5, patience=15):
+              wd=1e-2, alpha=0.5, patience=15, device=None):
     """Train GNN on training set, return trained model."""
-    model = RTGraphNet()
+    if device is None:
+        device = _get_device()
+    model = RTGraphNet().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     bce = nn.BCEWithLogitsLoss()
     mse = nn.MSELoss()
@@ -213,11 +240,13 @@ def train_gnn(graphs_train, labels_active, labels_eff, n_epochs=80, lr=1e-3,
             full_g, site_g = graphs_train[idx]
             if full_g is None:
                 continue
-            logit_cls, pred_reg, _ = model(full_g, site_g)
-            target_cls = torch.tensor(float(labels_active[idx]))
-            target_reg = torch.tensor(float(labels_eff[idx]))
+            full_g_d = _graph_to_device(full_g, device)
+            site_g_d = _graph_to_device(site_g, device)
+            logit_cls, pred_reg, _ = model(full_g_d, site_g_d)
+            target_cls = torch.tensor(float(labels_active[idx]), device=device)
+            target_reg = torch.tensor(float(labels_eff[idx]), device=device)
             loss = alpha * bce(logit_cls, target_cls) + (1-alpha) * mse(pred_reg, target_reg)
-            loss = loss / 4  # gradient accumulation
+            loss = loss / 4
             loss.backward()
             total_loss += loss.item() * 4
 
@@ -237,29 +266,25 @@ def train_gnn(graphs_train, labels_active, labels_eff, n_epochs=80, lr=1e-3,
     return model
 
 
-def predict_gnn(model, graphs, beta=0.5):
+def predict_gnn(model, graphs, beta=0.5, device=None):
     """Predict scores for a list of graphs. Returns combined score."""
+    if device is None:
+        device = next(model.parameters()).device
     model.eval()
     scores = []
-    for full_g, site_g in graphs:
-        if full_g is None:
-            scores.append(0.0)
-            continue
-        with torch.no_grad():
-            logit_cls, pred_reg, _ = model(full_g, site_g)
-            p_cls = torch.sigmoid(logit_cls).item()
-            reg = pred_reg.item()
-        scores.append(reg)  # raw, will be normalized later
-    scores = np.array(scores)
-    # Also get p_active for the additive score
     p_actives = []
     for full_g, site_g in graphs:
         if full_g is None:
+            scores.append(0.0)
             p_actives.append(0.0)
             continue
+        full_g_d = _graph_to_device(full_g, device)
+        site_g_d = _graph_to_device(site_g, device)
         with torch.no_grad():
-            logit_cls, _, _ = model(full_g, site_g)
+            logit_cls, pred_reg, _ = model(full_g_d, site_g_d)
+            scores.append(pred_reg.item())
             p_actives.append(torch.sigmoid(logit_cls).item())
+    scores = np.array(scores)
     p_actives = np.array(p_actives)
 
     # Additive score: β * norm(reg) + (1-β) * norm(p_active)
@@ -311,49 +336,61 @@ def main():
         return (a - mn) / (mx - mn) if mx - mn > 1e-12 else np.zeros_like(a)
 
     # ===================================================================
-    # GNN STANDALONE (nested LOFO)
+    # GNN STANDALONE (nested LOFO with β optimized per outer fold)
     # ===================================================================
-    print('\n[2] GNN Standalone (nested LOFO)...')
+    print('\n[2] GNN Standalone (nested LOFO, β nested)...')
 
-    best_standalone_cls = -1
-    best_standalone_beta = 0.5
-    best_standalone_oof = None
+    all_oof_standalone = []
+    for outer_family in splits:
+        outer_rts = splits[outer_family]
+        inner_splits = {f: rts for f, rts in splits.items() if f != outer_family}
+        train_rts = [rt for rts in inner_splits.values() for rt in rts]
 
-    for beta in [0.3, 0.5, 0.7]:
-        all_oof = []
-        for outer_family in splits:
-            outer_rts = splits[outer_family]
-            train_rts = [rt for f, rts in splits.items() if f != outer_family for rt in rts]
+        # Inner LOFO to find best β
+        best_beta_inner, best_cls_inner = 0.5, -1
+        for beta_candidate in [0.3, 0.5, 0.7]:
+            inner_oof_scores = np.full(len(train_rts), np.nan)
+            rt_to_idx = {rt: i for i, rt in enumerate(train_rts)}
+            for inner_held_fam in inner_splits:
+                inner_held_rts = inner_splits[inner_held_fam]
+                inner_train_rts = [rt for f, rts in inner_splits.items() if f != inner_held_fam for rt in rts]
+                g_tr = [all_graphs[rt] for rt in inner_train_rts]
+                la = [active_dict[rt] for rt in inner_train_rts]
+                le = [eff_dict[rt] for rt in inner_train_rts]
+                m = train_gnn(g_tr, la, le, alpha=0.5)
+                g_held = [all_graphs[rt] for rt in inner_held_rts]
+                s_held = predict_gnn(m, g_held, beta=beta_candidate)
+                for j, rt in enumerate(inner_held_rts):
+                    inner_oof_scores[rt_to_idx[rt]] = s_held[j]
+                del m
+            inner_active = np.array([active_dict[rt] for rt in train_rts])
+            inner_eff = np.array([eff_dict[rt] for rt in train_rts])
+            cc = compute_cls(inner_active, inner_oof_scores, inner_eff)['cls']
+            if cc > best_cls_inner:
+                best_cls_inner, best_beta_inner = cc, beta_candidate
 
-            graphs_tr = [all_graphs[rt] for rt in train_rts]
-            labels_a = [active_dict[rt] for rt in train_rts]
-            labels_e = [eff_dict[rt] for rt in train_rts]
+        # Train on all inner families with best β, predict outer
+        graphs_tr = [all_graphs[rt] for rt in train_rts]
+        labels_a = [active_dict[rt] for rt in train_rts]
+        labels_e = [eff_dict[rt] for rt in train_rts]
+        model = train_gnn(graphs_tr, labels_a, labels_e, alpha=0.5)
 
-            model = train_gnn(graphs_tr, labels_a, labels_e, alpha=0.5)
+        graphs_out = [all_graphs[rt] for rt in outer_rts]
+        scores = predict_gnn(model, graphs_out, beta=best_beta_inner)
 
-            # Predict on held-out
-            graphs_out = [all_graphs[rt] for rt in outer_rts]
-            scores = predict_gnn(model, graphs_out, beta=beta)
+        for i, rt in enumerate(outer_rts):
+            all_oof_standalone.append({
+                'rt_name': rt, 'active': active_dict[rt],
+                'pe_efficiency_pct': eff_dict[rt], 'rt_family': rt_family[rt],
+                'predicted_score': scores[i]
+            })
+        print(f'  {outer_family:<25s} β={best_beta_inner}  inner_cls={best_cls_inner:.4f}')
+        del model
 
-            for i, rt in enumerate(outer_rts):
-                all_oof.append({
-                    'rt_name': rt, 'active': active_dict[rt],
-                    'pe_efficiency_pct': eff_dict[rt], 'rt_family': rt_family[rt],
-                    'predicted_score': scores[i]
-                })
-
-            del model
-
-        oof = pd.DataFrame(all_oof).set_index('rt_name').loc[gt_order].reset_index()
-        r = compute_cls(oof['active'].values, oof['predicted_score'].values,
-                        oof['pe_efficiency_pct'].values)
-        print(f'  β={beta}: CLS={r["cls"]:.4f}  PR={r["pr_auc"]:.4f}  WSp={r["w_spearman"]:.4f}')
-        if r['cls'] > best_standalone_cls:
-            best_standalone_cls = r['cls']
-            best_standalone_beta = beta
-            best_standalone_oof = oof
-
-    print(f'  Best standalone: β={best_standalone_beta}  CLS={best_standalone_cls:.4f}')
+    oof_standalone = pd.DataFrame(all_oof_standalone).set_index('rt_name').loc[gt_order].reset_index()
+    r_standalone = compute_cls(oof_standalone['active'].values, oof_standalone['predicted_score'].values,
+                               oof_standalone['pe_efficiency_pct'].values)
+    print(f'  GNN standalone: CLS={r_standalone["cls"]:.4f}  PR={r_standalone["pr_auc"]:.4f}  WSp={r_standalone["w_spearman"]:.4f}')
 
     # ===================================================================
     # GNN + V6 BLEND (strict nested LOFO, leak-free)
@@ -457,7 +494,7 @@ def main():
 
     # Full nested LOFO with GNN + v6 blend
     all_oof_blend = []
-    beta = best_standalone_beta
+    beta = 0.5  # fixed for GNN score construction in blend; β was nested in standalone
 
     for outer_family in splits:
         outer_rts = splits[outer_family]
@@ -553,7 +590,7 @@ def main():
     print('SUMMARY')
     print('='*70)
     print(f'  v6 baseline:        CLS={r_v6["cls"]:.4f}  PR={r_v6["pr_auc"]:.4f}  WSp={r_v6["w_spearman"]:.4f}')
-    print(f'  GNN standalone:     CLS={best_standalone_cls:.4f}')
+    print(f'  GNN standalone:     CLS={r_standalone["cls"]:.4f}  PR={r_standalone["pr_auc"]:.4f}  WSp={r_standalone["w_spearman"]:.4f}')
     print(f'  GNN + v6 blend:     CLS={r_blend["cls"]:.4f}  PR={r_blend["pr_auc"]:.4f}  WSp={r_blend["w_spearman"]:.4f}  delta={r_blend["cls"]-r_v6["cls"]:+.4f}')
 
     if r_blend['cls'] > r_v6['cls']:

@@ -237,7 +237,8 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - **Implementation caveats**: β (cls/reg balance) selected ex-post on global OOF, not nested per fold. Early stopping on training loss, not inner CLS. No device management (CPU-only script, GPU run was a separate manual execution).
 - **Standalone GNN**: CLS 0.000 across all β values. W-Spearman 0.000. The network learns nothing generalizable on ~50 training samples.
 - **GNN + v6 blend** (49 GNN trainings, inner OOF for weight optimization): CLS 0.000. On most folds w_v6 ≈ 1.0 (GNN ignored), but on folds where GNN gets weight it destroys the score.
-- **NO-GO for this prototype**: a node-feature-only GCN with ~2K params shows no signal on n=57. A distance-aware architecture (e.g., GVP, edge-conditioned convolution) with nested β optimization could in principle differ, but the complete absence of standalone signal (CLS 0.000) suggests the core problem is sample size, not architecture.
+- **Corrected rerun** (NNConv edge-conditioned convolution, nested β per fold, CUDA): GNN standalone CLS 0.205, GNN+v6 blend CLS 0.246. Edge features and proper nesting did not help. Most folds give w_v6=1.0 (GNN ignored); on 2 folds where GNN gets weight it destroys the score.
+- **NO-GO**: both node-only GCN and edge-aware NNConv fail completely on n=57. The core problem is sample size — no neural architecture can learn generalizable structure-function patterns from ~50 training proteins in LOFO.
 
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
