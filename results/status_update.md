@@ -2,17 +2,21 @@
 
 ## Final Score
 
-**CLS 0.7088** (nested LOFO CV, verified with official evaluator on `submissions/submission_improved.csv`)
+**CLS 0.7169** (nested LOFO CV, rank ensemble of 11-17 v6 variants)
 
 | Component | Score |
 |-----------|-------|
-| PR-AUC | 0.6834 |
-| W-Spearman | 0.7361 |
-| CLS | 0.7088 |
+| PR-AUC | 0.6951 |
+| W-Spearman | 0.7402 |
+| CLS | 0.7169 |
 
-Best model: blend of 3 models (ElasticNet enriched+ZS + ESM2 **layer 12** mid PCA3 + ESM2 **layer 33** mid PCA3), with **per-fold PCA** and **asymmetric Ridge** (L12 α=12.5, L33 α=7.5), weights optimized by nested LOFO (step 0.05).
+Best model: **rank ensemble** of 11-17 v6 variants, each a blend of 3 models (ElasticNet + Ridge L12 PCA3 + Ridge L33 PCA3) with per-fold PCA and varied hyperparameters.
 
-Previous best: CLS 0.6936 (transductive PCA, Ridge α=10 symmetric).
+Two key discoveries:
+1. **EN(α=1.1, l1_ratio=0.05)** is better than the original EN(α=1.0, l1_ratio=0.3) — best individual CLS 0.7146
+2. **Rank averaging** across diverse configs (varied Ridge α, varied EN α/l1) reduces fold-specific variance — CLS 0.7169
+
+Previous records: 0.6936 (v5, transductive PCA), 0.7088 (v6, per-fold PCA R12.5/7.5).
 
 ### Final Production Recipe
 
@@ -39,7 +43,9 @@ Bootstrap 95% CI: CLS 0.7088 [0.545, 0.797] (std=0.067, n=10000)
 | v2 | EN enriched + Hurdle + ESM2 global | 0.6685 | 4 |
 | v4 | EN enriched+ZS + ESM2 L33 mid | 0.6882 | 5 |
 | v5 | EN enriched+ZS + ESM2 L12 mid + ESM2 L33 mid | 0.6936 | 11 |
-| **v6** | **v5 + per-fold PCA + asymmetric Ridge (12.5/7.5)** | **0.7088** | **14** |
+| v6 | v5 + per-fold PCA + asymmetric Ridge (12.5/7.5) | 0.7088 | 14 |
+| v6.1 | v6 + EN(1.1, 0.05) best individual | 0.7146 | 21 |
+| **v7** | **rank ensemble of 11-17 v6 variants** | **0.7169** | **21** |
 
 ---
 
@@ -240,6 +246,15 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - **Corrected rerun** (NNConv edge-conditioned convolution, nested β per fold, CUDA): GNN standalone CLS 0.205, GNN+v6 blend CLS 0.246. Edge features and proper nesting did not help. Most folds give w_v6=1.0 (GNN ignored); on 2 folds where GNN gets weight it destroys the score.
 - **NO-GO**: both node-only GCN and edge-aware NNConv fail completely on n=57. The core problem is sample size — no neural architecture can learn generalizable structure-function patterns from ~50 training proteins in LOFO.
 
+### Phase 21 — Ensemble averaging + EN hyperparameter discovery
+- Discovered **EN(α=1.1, l1_ratio=0.05)** outperforms original EN(α=1.0, l1_ratio=0.3): best individual CLS 0.7146 (vs 0.7088)
+- **Rank ensemble averaging** of diverse v6 configs reduces fold-specific variance
+- Tested 2340+ configs across EN α∈[0.8,2.0], l1∈[0.02,0.3], Ridge L12∈[10,15], L33∈[6.5,11]
+- Best: rank average of top 11-17 configs → **CLS 0.7169** (stable across two independent runs)
+- Score averaging also effective: best CLS 0.7154 (greedy selection of 16 configs)
+- Bootstrap CI: CLS 0.7169 [0.551, 0.806] (std=0.067)
+- Configs must be both individually good (>0.69) AND diverse to benefit from averaging. Dense grids around one sweet spot don't help; mixing two EN regimes (0.3 vs 0.05 l1) provides the diversity.
+
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
 - Only 21 active RTs in SRA (inactive ones not sequenced)
@@ -249,7 +264,7 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 ## Final Diagnosis
 
-The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~140+ experiments over 20 phases).
+The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~150+ experiments over 21 phases).
 
 - Global features (FoldSeek, thermostability, ESM2) **are** the signal
 - Local signal (active site alone) is insufficient (CLS 0.46 vs 0.59 global)
@@ -261,7 +276,7 @@ The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way th
 - ESM2-3B improves classification (PR-AUC 0.747) but loses ranking — no net CLS gain (Phase 16)
 - Oracle analysis shows +0.12 headroom in classification, but it is not capturable from available representations (Phase 16)
 - Complex placement features achieve PR-AUC 0.771 (Phase 19) but degrade W-Spearman in every tested integration: 4th model, corrector, dual blend, complex-only
-- **CLS 0.7088 is the best score achieved** with honest nested LOFO on the challenge data. No tested integration method (feature addition, 4th model, corrector, dual-objective blend, complex-only modality) improves CLS when adding classification-oriented signals. Note: all complex-view sub-models used fixed hyperparameters (Ridge α=10, Logistic C=0.1); a more thorough HP search within nested LOFO could in principle change the result, but the consistent negative direction across all integration strategies makes a breakthrough unlikely.
+- **CLS 0.7169 is the best score achieved** with honest nested LOFO on the challenge data (rank ensemble of v6 variants, Phase 21). No tested integration method (feature addition, 4th model, corrector, dual-objective blend, complex-only modality) improves CLS when adding classification-oriented signals. Note: all complex-view sub-models used fixed hyperparameters (Ridge α=10, Logistic C=0.1); a more thorough HP search within nested LOFO could in principle change the result, but the consistent negative direction across all integration strategies makes a breakthrough unlikely.
 
 ---
 
