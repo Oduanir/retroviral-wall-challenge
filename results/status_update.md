@@ -255,6 +255,11 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - Bootstrap CI: CLS 0.7169 [0.551, 0.806] (std=0.067)
 - Configs must be both individually good (>0.69) AND diverse to benefit from averaging. Dense grids around one sweet spot don't help; mixing two EN regimes (0.3 vs 0.05 l1) provides the diversity.
 
+### Phase 21b — Tier 1 creative approaches
+- **Evolutionary features** (7): pairwise BLOSUM62 alignment among 57 RTs, YXDD local similarity to MMLV, global vs local gap. `yxdd_local_sim_mmlv` AUROC 0.729 (novel, |r|=0.72 with FoldSeek). Not integrated (consistent negative pattern).
+- **Pairwise learn-to-rank**: convert 57 samples into 1596 pairs, train LogisticRegression on feature differences, score by win rate. CLS 0.453 — ranking collapses.
+- **Per-fold adaptive ensemble**: select best K configs per outer fold via inner LOFO. CLS 0.429 — massive overfit on fold-level selection.
+
 ### Phase 22 — ESM2 attention surgery + in-silico mutagenesis
 - **Attention features** (10): YXDD attention entropy, long-range fraction, attention to termini, symmetry, concentration. Best AUROC: attn_symmetry 0.676 (max|r|=0.44 — genuinely novel).
 - **Mutagenesis features** (7): YXDD log-likelihood sensitivity, neighborhood LL, ratio, variance, conservation agreement, escape score. Best AUROC: mut_neighborhood_ll 0.617 (max|r|=0.63 — moderately novel).
