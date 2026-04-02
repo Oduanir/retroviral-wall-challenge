@@ -266,6 +266,14 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - All individually negative when added to v6 EN. Rank ensemble with 4 configs > 0.70: CLS 0.7155 (below 0.7169 record).
 - **Scientific finding**: `motif_FGLK_dist_to_yxdd` is the strongest non-redundant univariate classifier found in the project (AUROC 0.767) but its ranking signal is anti-correlated with v6's W-Spearman, preventing CLS gain.
 
+### Phase 21d — Exhaustive untested approaches
+- **Feature interactions** (66 systematic pairwise): no individual improvement over baseline
+- **Mixed-objective** (EN binary classification + L12/L33 regression): CLS 0.566 — changes objective destroys ranking
+- **Huber regression** (5 epsilon values, robust to MMLV outlier): max CLS 0.605 — robust loss degrades CLS
+- **Feature subset diversity** (5 thematic subsets): all < 0.70
+- **Non-linear transforms** (log, square of key features): max CLS 0.699 — quasi-neutral
+- Mega-ensemble of all: CLS 0.714, below 0.7169 record
+
 ### Phase 22 — ESM2 attention surgery + in-silico mutagenesis
 - **Attention features** (10): YXDD attention entropy, long-range fraction, attention to termini, symmetry, concentration. Best AUROC: attn_symmetry 0.676 (max|r|=0.44 — genuinely novel).
 - **Mutagenesis features** (7): YXDD log-likelihood sensitivity, neighborhood LL, ratio, variance, conservation agreement, escape score. Best AUROC: mut_neighborhood_ll 0.617 (max|r|=0.63 — moderately novel).
