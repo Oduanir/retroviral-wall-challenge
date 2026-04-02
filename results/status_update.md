@@ -255,6 +255,13 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 - Bootstrap CI: CLS 0.7169 [0.551, 0.806] (std=0.067)
 - Configs must be both individually good (>0.69) AND diverse to benefit from averaging. Dense grids around one sweet spot don't help; mixing two EN regimes (0.3 vs 0.05 l1) provides the diversity.
 
+### Phase 22 — ESM2 attention surgery + in-silico mutagenesis
+- **Attention features** (10): YXDD attention entropy, long-range fraction, attention to termini, symmetry, concentration. Best AUROC: attn_symmetry 0.676 (max|r|=0.44 — genuinely novel).
+- **Mutagenesis features** (7): YXDD log-likelihood sensitivity, neighborhood LL, ratio, variance, conservation agreement, escape score. Best AUROC: mut_neighborhood_ll 0.617 (max|r|=0.63 — moderately novel).
+- **All non-redundant** (max|r| < 0.66 with existing features)
+- **All negative** when added individually to v6 EN. Best: attn_to_termini (delta -0.011). Worst: mut_variance (delta -0.081).
+- **Conclusion**: ESM2 internal representations (attention patterns, per-position mutagenesis sensitivity) capture novel but non-additive signal. The information is genuinely different from embeddings but does not improve CLS when injected into the current pipeline.
+
 ### SRA feasibility assessed
 - BioProject PRJNA916060: 216 runs Figure 1C, 1.2 GB
 - Only 21 active RTs in SRA (inactive ones not sequenced)
@@ -264,7 +271,7 @@ Bottleneck: Retron (PR-AUC 0.407). W-Spearman improved significantly (0.694→0.
 
 ## Final Diagnosis
 
-The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~150+ experiments over 21 phases).
+The PE signal in this 57-RT dataset is **confounded with phylogeny** in a way that resists all tested approaches (~160+ experiments over 22 phases).
 
 - Global features (FoldSeek, thermostability, ESM2) **are** the signal
 - Local signal (active site alone) is insufficient (CLS 0.46 vs 0.59 global)
